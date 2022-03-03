@@ -1,0 +1,80 @@
+image:
+  registry: docker.io
+  repository: bitnami/postgresql
+  tag: 14.2.0-debian-10-r13
+  pullPolicy: IfNotPresent
+
+architecture: standalone
+containerPorts:
+  postgresql: 5432
+
+postgresqlDataDir: /bitnami/postgresql/data
+
+shmVolume:
+  enabled: true
+  sizeLimit: "4Gi"
+
+primary:
+  extendedConfiguration: |-
+    temp_buffers = 1GB
+    work_mem = 512MB
+    maintenance_work_mem = 2GB
+    max_wal_size = 1GB
+    shared_buffers = 4GB
+    effective_cache_size = 8GB
+    wal_level = logical
+
+  resources:
+    limits:
+      cpu: "2"
+      memory: 32Gi
+    requests:
+      memory: 16Gi
+      cpu: "1"
+
+  podSecurityContext:
+    enabled: true
+    fsGroup: 1001
+
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 1001
+
+  persistence:
+    enabled: true
+    mountPath: /bitnami/postgresql
+    size: 350Gi
+
+  initdb:
+    scripts:
+      migrate_genomicsdb.sh: |
+        #!/bin/bash
+        
+        # bash strict mode
+        set -euo pipefail
+        IFS=$'\n\t'
+        
+        # OLDHOST and PGDB need to have been set as an envvar (e.g., primary.extraEnvVars)
+        export PGDATABASE=$PGDB
+        export PGPASSWORD=$POSTGRES_PASSWORD
+        export PGUSER=${PGUSER:=postgres}
+        
+        # copy "globals" (users/roles)
+        # exclude the 'postgres' user since that one was defined with initdb
+        pg_dumpall -h $OLDHOST -U postgres -g | grep -v 'ROLE postgres' | psql -d postgres
+        
+        # increase max_wal_size (temporarily) since we're about to do a lot of inserts
+        psql -d postgres <<EOSQL
+        ALTER SYSTEM SET max_wal_size TO '8GB';
+        SELECT pg_reload_conf();
+        EOSQL
+        
+        pg_dump -Fc -h $OLDHOST $PGDATABASE | pg_restore -C -v -d postgres 2>&1 # |tee "$POSTGRESQL_VOLUME_DIR/migration.log"
+        
+        # reset the max_wal_size
+        psql -d postgres <<EOSQL
+        ALTER SYSTEM SET max_wal_size TO DEFAULT;
+        SELECT pg_reload_conf();
+        EOSQL
+
+
